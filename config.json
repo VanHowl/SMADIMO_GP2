@@ -1,0 +1,5 @@
+{
+    "logging_enabled": true,
+    "logging_level": "DEBUG",
+    "save_to_csv": "zoon_data_all_full_.csv"
+}
