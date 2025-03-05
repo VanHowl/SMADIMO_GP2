@@ -27,7 +27,7 @@ else:
 
 logging.info("API запущен")
 
-ACCESS_TOKEN = "vk1.a.eS55JrL4tMoVVp9oOb38m6X3agCMRtr2dxogMo_USsSGmpJMz91d48Gsw-D25EPAmEUDlJvR2U6TCTgvNxQ0OpEBMVRr71UWUJ0ojznrf2EWLt6MN7gJD39W9e_QL1xMaBVzTdycszYNX7U4LnQrczte86Gr-XF6Lb426sZXTTLnmsU89kE3FJZY_uJ7kfwT"
+ACCESS_TOKEN = "vk1.a.K6PA5cy4Zu57p3JMs12lCyGZ8tS_BNBeaZbXlTf4RqQhkpwQDVkw-8xuUQDsHqC_uASSu-ZEJSRD-UrU2Dvqek5r16PrP9sNw52A91AXqbt0ULmYci2AmHdgaWORfcYXNgJLtccq41zxUmcF6CLfbhKUw0xyYQh0r4RJ-G9nHcg_XOntkb6R-fH018ACIT57"
 
 API_VERSION = "5.131"
 BASE_URL = "https://api.vk.com/method/"
@@ -35,19 +35,18 @@ BASE_URL = "https://api.vk.com/method/"
 file_path = "zoon_data_all_full_.csv"
 log_file = "logs.csv"
 
+counter = 0
+
 df = pd.read_csv(file_path)
 business_names = df["Название"].dropna().unique().tolist()
 
 aggregated_results = []
 six_months_ago = datetime.now() - timedelta(days=180)
 
-# CSV-файл
 def log_to_csv(business_name, group_id, reason):
-    """Функция для записи логов в CSV"""
     logging.info([datetime.now(), business_name, group_id, reason])
 
 def vk_request(method, params):
-    """для выполнения запросов к VK API"""
     params.update({"access_token": ACCESS_TOKEN, "v": API_VERSION})
     response = requests.get(BASE_URL + method, params=params)
     time.sleep(0.5)
@@ -59,6 +58,41 @@ def vk_request(method, params):
         logging.error(f"Ошибка при запросе к {method}: {response.status_code} - {response.text}")
 
     return response.json()
+
+def get_gender_distribution(group_id):
+    group_info = vk_request("groups.getById", {"group_id": group_id, "fields": "members_count"})
+    total_members = group_info.get("response", [{}])[0].get("members_count", 0)
+
+    min_members = min(1000, total_members)
+    response = vk_request("groups.getMembers", {"group_id": group_id, "fields": "sex", "count": min_members})
+
+    if "response" in response and "items" in response["response"]:
+        members = response["response"]["items"]
+
+        if not members:
+            return 0, 0, 1
+
+        male_count = sum(1 for member in members if member.get("sex") == 2)
+        female_count = sum(1 for member in members if member.get("sex") == 1)
+        sampled_count = len(members)
+
+        percent_male = round((male_count / sampled_count) * 100, 2) if sampled_count > 0 else 0
+        percent_female = 100 - percent_male if sampled_count > 0 else 0
+
+        return percent_male, percent_female, 0
+
+    return 0, 0, 1
+
+
+def get_avg_news_mentions(query):
+    end_time = int(datetime.now().timestamp())
+    start_time = int((datetime.now() - timedelta(days=30)).timestamp())
+    query = f'"{query}"'
+    news_response = vk_request("newsfeed.search", {"q": query, "start_time": start_time, "end_time": end_time, "count": 100 })
+    if "response" in news_response and isinstance(news_response["response"], dict):
+        count = news_response["response"].get("count", 0)
+        return count / 30.0
+    return 0
 
 
 for business_name in business_names:
@@ -74,6 +108,10 @@ for business_name in business_names:
     avg_likes_per_post = 0
     avg_views_per_post = 0
     engagement_rate = 0
+    percent_male = 0
+    percent_female = 0
+    members_see = 0
+    avg_news_mentions = 0
 
     best_match = None
     best_score = 0
@@ -85,7 +123,6 @@ for business_name in business_names:
             match_score = fuzz.ratio(business_name.lower(), group_name)
 
             logging.info(f"Найдена группа: {group_name} (ID: {group_id}) | Совпадение: {match_score}%")
-
 
             if match_score > best_score and match_score >= 60:
                 best_match = group
@@ -104,6 +141,9 @@ for business_name in business_names:
             wall_response = vk_request("wall.get", {"owner_id": f"-{group_id}", "count": 100})
             posts = wall_response.get("response", {}).get("items", [])
             recent_posts = [post for post in posts if datetime.fromtimestamp(post["date"]) > six_months_ago]
+
+            percent_male, percent_female, members_see = get_gender_distribution(group_id)
+            avg_news_mentions = get_avg_news_mentions(business_name)
 
             num_posts_last_6_months = len(recent_posts)
 
@@ -133,18 +173,24 @@ for business_name in business_names:
     company_data = {
         "Название": business_name,
         "Группа найдена": group_found,
+        "Подписчики скрыты": members_see,
         "Тематика группы": group_activity,
         "Число подписчиков": members_count,
+        "Среднее число упоминаний в новостях в день": round(avg_news_mentions, 2),
+        "Процент мужчин": percent_male,
+        "Процент женщин": percent_female,
         "Число постов за 6 месяцев": num_posts_last_6_months,
         "Среднее число комментариев на пост": round(avg_comments_per_post, 2),
         "Среднее число лайков на пост": round(avg_likes_per_post, 2),
         "Среднее число просмотров на пост": round(avg_views_per_post, 2),
         "Процент вовлеченности (ER)": round(engagement_rate, 2)
     }
-
+    print(company_data)
+    counter += 1
+    print(counter)
     aggregated_results.append(company_data)
 
-    logging.info(f"Добавлена: {business_name} | Подписчики: {members_count} | Тематика: {group_activity} | Постов за 6 мес: {num_posts_last_6_months} | Лайков/пост: {round(avg_likes_per_post, 2)} | Просмотров/пост: {round(avg_views_per_post, 2)} | ER: {round(engagement_rate, 2)}%")
+    logging.info(f"Добавлена: {business_name} | Подписчики: {members_count} | Тематика: {group_activity} | Постов за 6 мес: {num_posts_last_6_months} | Лайков/пост: {round(avg_likes_per_post, 2)} | Просмотров/пост: {round(avg_views_per_post, 2)} | ER: {round(engagement_rate, 2)}% | Подписчики скрыты: {members_see} | Процент мужчин: {percent_male} | Процент женщин: {percent_female} | Среднее число упоминаний в новостях в день: {round(avg_news_mentions, 2)}")
 
 aggregated_df = pd.DataFrame(aggregated_results)
 aggregated_df.to_csv(save_to_csv, index=False, encoding="utf-8-sig")
